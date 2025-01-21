@@ -9,6 +9,7 @@
    <FUNCTIONS>
     <item>
      <FUNCNAME>ZZFG_MM_003_0001</FUNCNAME>
+     <SHORT_TEXT>采购订单创建接口</SHORT_TEXT>
      <IMPORT>
       <RSIMP>
        <PARAMETER>I_REQ</PARAMETER>
@@ -37,6 +38,7 @@
     </item>
     <item>
      <FUNCNAME>ZZFG_MM_003_0002</FUNCNAME>
+     <SHORT_TEXT>采购订单修改接口</SHORT_TEXT>
      <IMPORT>
       <RSIMP>
        <PARAMETER>I_REQ</PARAMETER>

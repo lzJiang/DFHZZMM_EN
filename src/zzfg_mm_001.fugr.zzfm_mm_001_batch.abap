@@ -1,6 +1,6 @@
 FUNCTION zzfm_mm_001_batch.
 *"----------------------------------------------------------------------
-*"*"Local Interface:
+*"*"本地接口：
 *"----------------------------------------------------------------------
 
 
@@ -16,7 +16,8 @@ FUNCTION zzfm_mm_001_batch.
   DATA:lt_mapping TYPE /ui2/cl_json=>name_mappings.
   DATA:lv_json TYPE string.
   DATA:ls_charc TYPE ty_charc.
-  DATA:lv_mater18(18).
+  DATA:lv_mater18(18),
+       lv_find TYPE c.
 *&---=============================使用API 步骤01
 *&---=========1.API 类使用变量
 *&---定义场景使用变量
@@ -56,7 +57,7 @@ FUNCTION zzfm_mm_001_batch.
   ENDLOOP.
 
 
-
+  WAIT UP TO 1 SECONDS.
   LOOP AT gt_item INTO DATA(ls_item) WHERE batch IS NOT INITIAL
                                      AND zzversion IS NOT INITIAL.
 

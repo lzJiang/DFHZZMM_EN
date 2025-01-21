@@ -1,6 +1,6 @@
 FUNCTION zzfm_mm_004.
 *"----------------------------------------------------------------------
-*"*"Local Interface:
+*"*"本地接口：
 *"  IMPORTING
 *"     REFERENCE(I_REQ) TYPE  ZZS_MMI004_REQ OPTIONAL
 *"  EXPORTING
@@ -53,6 +53,7 @@ FUNCTION zzfm_mm_004.
   DATA(lo_dest) = zzcl_comm_tool=>get_dest( ).
 
 
+
 *&---导入结构JSON MAPPING
   lt_mapping = VALUE #(
        ( abap = 'CompanyCode'                    json = 'CompanyCode'                )
@@ -81,6 +82,19 @@ FUNCTION zzfm_mm_004.
        ( abap = 'PurchaseOrderQuantityUnit'      json = 'PurchaseOrderQuantityUnit'        )
      ).
 
+  IF ls_req-head-supplierinvoiceidbyinvcgparty IS NOT INITIAL.
+    SELECT SINGLE *
+             FROM i_supplierinvoiceapi01 WITH PRIVILEGED ACCESS
+            WHERE supplierinvoiceidbyinvcgparty = @ls_req-head-supplierinvoiceidbyinvcgparty
+             INTO @DATA(ls_supplierinvoice).
+    IF sy-subrc = 0.
+      o_resp-msgty = 'E'.
+      o_resp-msgtx = |外围单据【{ ls_req-head-supplierinvoiceidbyinvcgparty }】已创建SAP预制发票{ ls_supplierinvoice-supplierinvoice }|
+      && |-{ ls_supplierinvoice-fiscalyear }，请勿重复创建|.
+      RETURN.
+    ENDIF.
+  ENDIF.
+
   "公司代码
   ls_data-companycode = ls_req-head-companycode.
   "抬头文本
@@ -105,6 +119,23 @@ FUNCTION zzfm_mm_004.
   ls_data-taxdeterminationdate = zzcl_comm_tool=>date2iso( ls_req-head-taxdeterminationdate ).
 
   LOOP AT ls_req-item INTO DATA(ls_item).
+    SELECT SINGLE b~*
+        FROM i_materialdocumentheader_2 WITH PRIVILEGED ACCESS AS a
+        INNER JOIN i_materialdocumentitem_2 WITH PRIVILEGED ACCESS AS b
+          ON a~materialdocument = b~materialdocument AND a~materialdocumentyear = b~materialdocumentyear
+       WHERE materialdocumentheadertext = @ls_item-referencedocument
+         AND b~goodsmovementiscancelled = ''
+         AND b~reversedmaterialdocument = ''
+        INTO @DATA(ls_materialdocumentitem).
+    IF sy-subrc = 0.
+      ls_item-referencedocument = ls_materialdocumentitem-materialdocument.
+      ls_item-referencedocumentfiscalyear = ls_materialdocumentitem-materialdocumentyear.
+      ls_item-referencedocumentitem = ls_materialdocumentitem-materialdocumentitem.
+    ELSE.
+      o_resp-msgty = 'E'.
+      o_resp-msgtx = |未找到WMS入库单【{ ls_item-referencedocument }】对应SAP物料凭证，请联系WMS管理员|.
+      RETURN.
+    ENDIF.
     CLEAR:ls_results.
     MOVE-CORRESPONDING ls_item TO ls_results.
     APPEND ls_results TO ls_data-to_suplrinvcitempurordref-results.
@@ -140,6 +171,7 @@ FUNCTION zzfm_mm_004.
       IF status-code = '201'.
         TYPES:BEGIN OF ty_heads,
                 supplierinvoice TYPE string,
+                fiscalyear TYPE string,
               END OF ty_heads,
               BEGIN OF ty_ress,
                 d TYPE ty_heads,
@@ -150,7 +182,7 @@ FUNCTION zzfm_mm_004.
 
         o_resp-msgty  = 'S'.
         o_resp-msgtx  = 'success'.
-        o_resp-sapnum = ls_ress-d-supplierinvoice.
+        o_resp-sapnum = |{ ls_ress-d-supplierinvoice }-{ ls_ress-d-fiscalyear }|.
       ELSE.
         DATA:ls_rese TYPE zzs_odata_fail.
         /ui2/cl_json=>deserialize( EXPORTING json  = lv_res

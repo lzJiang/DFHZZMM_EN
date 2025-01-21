@@ -263,7 +263,7 @@ FUNCTION zzfg_mm_002_0001.
         APPEND VALUE #(
                     bankidentification = '0001'      "标识
                     bankcountrykey = 'CN'            "银行国家
-                    banknumber = '999999999999'   "银行代码
+                    banknumber = '9999999999'   "银行代码
                     bankaccount = ls_req-bankaccount "银行账号
                     bankaccountname = ls_req-bankaccountname "银联账号
                     bankaccountholdername = ls_req-bankname "银行名称

@@ -1,6 +1,6 @@
 FUNCTION zzfm_mm_001.
 *"----------------------------------------------------------------------
-*"*"Local Interface:
+*"*"本地接口：
 *"  IMPORTING
 *"     REFERENCE(I_REQ) TYPE  ZZS_MMI001_REQ OPTIONAL
 *"  EXPORTING
@@ -47,8 +47,9 @@ FUNCTION zzfm_mm_001.
           materialdocumentparentline   TYPE string,
           hierarchynodelevel           TYPE string,
           wbselement                   TYPE string,
-          batchbysupplier              TYPE string,
+          batchbysupplier(15)          TYPE c,
           inventorystocktype           TYPE string,
+          inventoryusabilitycode       TYPE string,
         END OF ty_item,
         BEGIN OF tty_item,
           results TYPE TABLE OF ty_item WITH EMPTY KEY,
@@ -82,6 +83,11 @@ FUNCTION zzfm_mm_001.
        lv_line_depth TYPE numc2.
   DATA:lv_quantity TYPE i_posubcontractingcompapi01-requiredquantity.
   DATA:lv_remain TYPE i_posubcontractingcompapi01-requiredquantity.
+  DATA:lv_purmaterial TYPE i_purchaseorderitemapi01-material.
+  DATA:lv_supplier   TYPE i_materialdocumentitem_2-supplier,
+       ls_zztmm_0005 TYPE zztmm_0005,
+       lt_zztmm_0005 TYPE TABLE OF zztmm_0005,
+       lv_543_flag   TYPE char1.
 
   ls_tmp = i_req.
 *&---=============================使用API 步骤01
@@ -133,6 +139,7 @@ FUNCTION zzfm_mm_001.
        ( abap = 'Customer'                     json = 'Customer'                    )
        ( abap = 'InventorySpecialStockType'    json = 'InventorySpecialStockType'   )
        ( abap = 'InventoryStockType'           json = 'InventoryStockType'          )
+       ( abap = 'InventoryUsabilityCode'       json = 'InventoryUsabilityCode'      )
        ( abap = 'MaterialDocumentItemText'     json = 'MaterialDocumentItemText'    )
        ( abap = 'WBSElement'                   json = 'WBSElement'                  )
 
@@ -140,6 +147,26 @@ FUNCTION zzfm_mm_001.
        ( abap = 'MaterialDocumentParentLine'   json = 'MaterialDocumentParentLine'  )
        ( abap = 'HierarchyNodeLevel'           json = 'HierarchyNodeLevel'  )
     ).
+
+  IF ls_tmp-req-head-materialdocumentheadertext IS NOT INITIAL.
+    SELECT SINGLE a~*
+           FROM i_materialdocumentheader_2 WITH PRIVILEGED ACCESS AS a
+           INNER JOIN i_materialdocumentitem_2 WITH PRIVILEGED ACCESS AS b
+             ON a~materialdocument = b~materialdocument AND a~materialdocumentyear = b~materialdocumentyear
+          WHERE materialdocumentheadertext = @ls_tmp-req-head-materialdocumentheadertext
+            AND goodsmovementiscancelled = ''
+            AND b~reversedmaterialdocument = ''
+           INTO @DATA(ls_materialdocumentheader).
+    IF sy-subrc = 0.
+      o_resp-msgty = 'S'.
+      o_resp-msgtx = |外围单据【{ ls_tmp-req-head-materialdocumentheadertext }】已生成SAP物料凭证{ ls_materialdocumentheader-materialdocument  }|
+      && |-{ ls_materialdocumentheader-materialdocumentyear },请勿重复推送| .
+      o_resp-sapnum = |{ ls_materialdocumentheader-materialdocument }-{ ls_materialdocumentheader-materialdocumentyear }| .
+      RETURN.
+    ENDIF.
+  ENDIF.
+
+  DATA(lv_user) = cl_abap_context_info=>get_user_technical_name( ).
 
   "数据整合
   "凭证日期
@@ -151,7 +178,7 @@ FUNCTION zzfm_mm_001.
   "抬头文本
   ls_data-materialdocumentheadertext = ls_tmp-req-head-materialdocumentheadertext.
   LOOP AT ls_tmp-req-item INTO DATA(ls_tmp_item).
-    CLEAR:ls_item.
+    CLEAR:ls_item,lv_purchaseorderitem,lv_purmaterial.
     lv_tabix = lv_tabix + 1.
     lv_line_id = lv_line_id + 1.
     MOVE-CORRESPONDING ls_tmp_item TO ls_item.
@@ -164,7 +191,13 @@ FUNCTION zzfm_mm_001.
     ls_tmp_item-material = lv_mater18.
     lv_deliveryitem = ls_item-deliveryitem.
 
-
+    "供应商批次
+    IF ls_tmp_item-batch IS NOT INITIAL.
+      ls_item-batchbysupplier = ls_tmp_item-batch.
+    ENDIF.
+    IF ls_tmp_item-zzwmsbatch IS NOT INITIAL.
+      ls_item-batchbysupplier = ls_tmp_item-zzwmsbatch.
+    ENDIF.
     "匹配批次
     IF ls_item-batch IS NOT INITIAL.
       SELECT SINGLE a~material,
@@ -178,6 +211,16 @@ FUNCTION zzfm_mm_001.
       IF sy-subrc = 0.
         ls_item-batch = ls_valuetp-batch.
         ls_tmp_item-batch = ls_item-batch.
+      ELSE.
+        IF ls_item-goodsmovementtype NE '101' AND ls_item-goodsmovementtype NE '501' AND lv_user = 'CC0000000002'.
+          o_resp-msgty  = 'E'.
+          o_resp-msgtx  = |非入库物料移动类型{ ls_item-goodsmovementtype }物料{ ls_tmp_item-material }WMS批次{ ls_item-batch }未找到对应SAP批次|.
+          RETURN.
+        ENDIF.
+        IF ls_item-goodsmovementtype = '501'.
+          ls_tmp_item-zzwmsbatch = ls_tmp_item-batch.
+          CLEAR:ls_tmp_item-batch,ls_item-batch.
+        ENDIF.
       ENDIF.
     ENDIF.
 
@@ -193,6 +236,12 @@ FUNCTION zzfm_mm_001.
       IF sy-subrc = 0.
         ls_item-issgorrcvgbatch = ls_valuetp-batch.
         ls_tmp_item-issgorrcvgbatch = ls_item-issgorrcvgbatch.
+      ELSE.
+        IF ls_item-goodsmovementtype NE '101' AND ls_item-goodsmovementtype NE '501' AND lv_user = 'CC0000000002'.
+          o_resp-msgty  = 'E'.
+          o_resp-msgtx  = |非入库物料移动类型{ ls_item-goodsmovementtype }物料{ ls_tmp_item-material }WMS批次{ ls_item-issgorrcvgbatch }未找到对应SAP批次|.
+          RETURN.
+        ENDIF.
       ENDIF.
     ENDIF.
 
@@ -253,16 +302,65 @@ FUNCTION zzfm_mm_001.
         IF ls_item-manufacturingorder IS NOT INITIAL.
           ls_data-goodsmovementcode = '02'.
           ls_item-goodsmovementrefdoctype = 'F'.
+          SELECT SINGLE *
+                 FROM i_manufacturingorderitem WITH PRIVILEGED ACCESS
+                WHERE manufacturingorder = @ls_item-manufacturingorder
+                 INTO @DATA(ls_manufacturingorderitem).
+          IF sy-subrc = 0.
+            ls_item-inventoryusabilitycode = ls_manufacturingorderitem-inventoryusabilitycode.
+          ENDIF.
+          CLEAR:ls_item-purchaseorderitem.
         ENDIF.
 
         IF ls_item-purchaseorder IS NOT INITIAL.
           ls_data-goodsmovementcode = '01'.
           ls_item-goodsmovementrefdoctype = 'B'.
+
+          IF strlen( ls_item-purchaseorderitem ) > 5.
+
+          ELSE.
+            lv_purchaseorderitem = ls_item-purchaseorderitem.
+          ENDIF.
+
+          SELECT SINGLE *
+                 FROM i_purchaseorderitemapi01 WITH PRIVILEGED ACCESS
+                WHERE purchaseorder = @ls_item-purchaseorder
+                  AND purchaseorderitem = @lv_purchaseorderitem
+                 INTO @DATA(ls_purchaseorderitemapi01).
+          IF sy-subrc NE 0.
+            "委外订单收货WMS行项目传入物料号，根据物料号查找SAP行号
+            lv_purmaterial = ls_item-purchaseorderitem.
+            zcl_com_util=>matnr_zero_in( EXPORTING input = lv_purmaterial
+                                         IMPORTING output = lv_purmaterial ).
+            SELECT SINGLE *
+                   FROM i_purchaseorderitemapi01 WITH PRIVILEGED ACCESS
+                  WHERE purchaseorder = @ls_item-purchaseorder
+                    AND material = @lv_purmaterial
+                   INTO @ls_purchaseorderitemapi01.
+            IF sy-subrc = 0.
+              ls_item-purchaseorderitem = ls_purchaseorderitemapi01-purchaseorderitem.
+            ELSE.
+              o_resp-msgty  = 'E'.
+              o_resp-msgtx  = |采购订单{ ls_item-purchaseorder }行/物料{ ls_item-purchaseorderitem }未找到对应SAP采购订单行|.
+              RETURN.
+            ENDIF.
+          ENDIF.
+
+          SELECT SINGLE *
+            FROM i_purchaseorderitemapi01 WITH PRIVILEGED ACCESS
+           WHERE purchaseorder = @ls_item-purchaseorder
+             AND purchaseorderitem = @ls_item-purchaseorderitem
+             AND purchaseorderitemcategory = '3'
+            INTO @DATA(ls_materialdocumentitem_1).
+          IF sy-subrc = 0 AND ls_item-goodsmovementtype = '101'.
+            "委外订单收货，设置最后收获标识为X,将委外订单组件全部消耗
+            ls_tmp_item-zzlast = 'X'.
+          ENDIF.
         ENDIF.
 
         "WMS批次特性
         IF ls_item-goodsmovementtype = '101'.
-          IF ls_tmp_item-zzwmsbatch IS NOT INITIAL.
+          IF ls_tmp_item-zzwmsbatch IS NOT INITIAL AND ls_tmp_item-purchaseorder IS NOT INITIAL.
             SELECT SINGLE a~material,
                           a~batch
               FROM i_batchcharacteristicvaluetp_2 WITH PRIVILEGED ACCESS AS a
@@ -275,24 +373,22 @@ FUNCTION zzfm_mm_001.
               ls_item-batch = ls_valuetp-batch.
               ls_tmp_item-batch = ls_item-batch.
             ELSE.
+              CLEAR:ls_item-batch.
               gv_wmsflag = abap_true.
               ls_item-materialdocumentitemtext = lv_tabix.
               ls_tmp_item-tabix = lv_tabix.
             ENDIF.
             ls_item-batchbysupplier = ls_tmp_item-zzwmsbatch.
           ENDIF.
-          IF ls_tmp_item-batch IS NOT INITIAL..
-            ls_item-batchbysupplier = ls_tmp_item-batch.
-          ENDIF.
 
           "当 是否最后一次收货 = X 时 ， 543 需要加增强计算扣减数量 = 总需要扣减数量 - 已提货数量
           "针对委外订单
-          IF ls_tmp_item-zzlast = 'X'.
+          IF ls_tmp_item-zzlast = 'X' AND ls_tmp_item-purchaseorder IS NOT INITIAL.
             lv_purchaseorderitem = ls_item-purchaseorderitem.
-            lv_parent_id = lv_tabix.
-            ls_item-materialdocumentline = lv_parent_id.
-
-            "组件
+            lv_parent_id = lv_line_id.
+            DATA:lt_collect_543 TYPE TABLE OF i_posubcontractingcompapi01,
+                 ls_collect_543 TYPE i_posubcontractingcompapi01.
+            "委外订单组件需求数量
             SELECT a~purchaseorder,
                    a~purchaseorderitem,
                    a~material,
@@ -306,67 +402,120 @@ FUNCTION zzfm_mm_001.
              WHERE a~purchaseorder = @ls_item-purchaseorder
                AND a~purchaseorderitem = @lv_purchaseorderitem
               INTO TABLE @DATA(lt_posub).
-            "库存
-            SELECT a~plant,
-                   a~product,
-                   c~lastgoodsreceiptdate,
-                   a~batch,
-                   a~matlwrhsstkqtyinmatlbaseunit
-              FROM i_stockquantitycurrentvalue_2( p_displaycurrency = 'CNY' ) WITH PRIVILEGED ACCESS AS a
-              JOIN @lt_posub AS b ON a~plant   = b~plant
-                                 AND a~product = b~material
-                                 AND a~supplier = b~supplier
-              JOIN i_batchdistinct WITH PRIVILEGED ACCESS AS c ON a~product = c~material
-                                                              AND a~batch = c~batch
-             WHERE a~inventoryspecialstocktype = 'O'
-               AND a~valuationareatype = '1'
 
-              INTO TABLE @DATA(lt_stock).
-            SORT lt_stock BY plant product lastgoodsreceiptdate ASCENDING.
+            IF lt_posub[] IS NOT INITIAL.
+              "委外订单组件提货数量
+              SELECT *
+                FROM i_materialdocumentitem_2 WITH PRIVILEGED ACCESS AS a
+               WHERE a~purchaseorder = @ls_item-purchaseorder
+                 AND a~purchaseorderitem = @lv_purchaseorderitem
+                 AND a~goodsmovementtype IN ( '543','544' )
+                INTO TABLE @DATA(lt_materialdocumentitem).
 
-            LOOP AT lt_posub INTO DATA(ls_posub).
-              CLEAR:ls_sub.
-              ls_sub-purchaseorder  =   ls_item-purchaseorder.
-              ls_sub-purchaseorderitem  = ls_item-purchaseorderitem.
-              ls_sub-goodsmovementtype = '543'.  " 移动类型
-              ls_sub-material = ls_posub-material. " 物料号
-              ls_sub-inventoryspecialstocktype = 'O'. " 特殊库存
-              ls_sub-supplier = ls_posub-supplier.
-              ls_sub-plant = ls_posub-plant.
-              "ls_sub-batch = '20241130AA'.
-              lv_quantity = ls_posub-requiredquantity - ls_posub-withdrawnquantity.
-              ls_sub-quantityinentryunit = ls_posub-requiredquantity - ls_posub-withdrawnquantity.
-              READ TABLE lt_stock TRANSPORTING NO FIELDS WITH KEY plant = ls_posub-plant
-                                                                  product = ls_posub-material BINARY SEARCH.
-              IF sy-subrc = 0.
-                LOOP AT lt_stock INTO DATA(ls_stock) FROM sy-tabix.
-                  IF ls_stock-plant = ls_posub-plant AND ls_stock-product = ls_posub-material.
-                    lv_remain = lv_quantity - ls_stock-matlwrhsstkqtyinmatlbaseunit.
-                    IF lv_remain >= 0.
-                      ls_sub-batch = ls_stock-batch.
-                      ls_sub-quantityinentryunit = ls_stock-matlwrhsstkqtyinmatlbaseunit.
-                      CONDENSE  ls_sub-quantityinentryunit NO-GAPS.
-                      ls_sub-materialdocumentparentline = lv_parent_id. " 父项目编码
-                      lv_line_id = lv_line_id + 1. " 子项目编号
-                      ls_sub-materialdocumentline = lv_line_id.
-                      APPEND ls_sub TO lt_item.
-                      lv_quantity = lv_remain .
+              LOOP AT lt_materialdocumentitem INTO DATA(ls_materialdocumentitem).
+                ls_collect_543-purchaseorder = ls_materialdocumentitem-purchaseorder.
+                ls_collect_543-purchaseorderitem = ls_materialdocumentitem-purchaseorderitem.
+                ls_collect_543-material = ls_materialdocumentitem-material.
+                IF ls_materialdocumentitem-goodsmovementtype = '544'.
+                  ls_materialdocumentitem-quantityinentryunit = ls_materialdocumentitem-quantityinentryunit * -1.
+                ENDIF.
+                ls_collect_543-withdrawnquantity = ls_materialdocumentitem-quantityinentryunit.
+                COLLECT ls_collect_543 INTO lt_collect_543.
+                CLEAR:ls_collect_543.
+              ENDLOOP.
+              SORT lt_collect_543 BY purchaseorder purchaseorderitem material.
+              LOOP AT lt_posub ASSIGNING FIELD-SYMBOL(<fs_posub>).
+                CLEAR:<fs_posub>-withdrawnquantity.
+                READ TABLE lt_collect_543 INTO ls_collect_543 WITH KEY purchaseorder = <fs_posub>-purchaseorder
+                                                                       purchaseorderitem = <fs_posub>-purchaseorderitem
+                                                                       material = <fs_posub>-material BINARY SEARCH.
+                IF sy-subrc = 0.
+                  <fs_posub>-withdrawnquantity = ls_collect_543-withdrawnquantity.
+                ENDIF.
+                IF <fs_posub>-requiredquantity - <fs_posub>-withdrawnquantity > 0.
+                  lv_543_flag = 'X'.
+                ENDIF.
+              ENDLOOP.
+*              IF lv_543_flag = 'X'.
+              "委外订单组件消耗不为空
+              ls_item-materialdocumentline = lv_parent_id.
+*              ENDIF.
+              "O库存
+              SELECT a~plant,
+                     a~product,
+                     c~lastgoodsreceiptdate,
+                     a~batch,
+                     a~matlwrhsstkqtyinmatlbaseunit
+                FROM i_stockquantitycurrentvalue_2( p_displaycurrency = 'CNY' ) WITH PRIVILEGED ACCESS AS a
+                JOIN @lt_posub AS b ON a~plant   = b~plant
+                                   AND a~product = b~material
+                                   AND a~supplier = b~supplier
+                JOIN i_batchdistinct WITH PRIVILEGED ACCESS AS c ON a~product = c~material
+                                                                AND a~batch = c~batch
+               WHERE a~inventoryspecialstocktype = 'O'
+                 AND a~valuationareatype = '1'
+
+                INTO TABLE @DATA(lt_stock).
+              SORT lt_stock BY plant product lastgoodsreceiptdate ASCENDING.
+
+              LOOP AT lt_posub INTO DATA(ls_posub).
+                CLEAR:ls_sub,lv_quantity.
+                ls_sub-purchaseorder  =   ls_item-purchaseorder.
+                ls_sub-purchaseorderitem  = ls_item-purchaseorderitem.
+                ls_sub-goodsmovementtype = '543'.  " 移动类型
+                ls_sub-material = ls_posub-material. " 物料号
+                ls_sub-inventoryspecialstocktype = 'O'. " 特殊库存
+                ls_sub-supplier = ls_posub-supplier.
+                ls_sub-plant = ls_posub-plant.
+                "ls_sub-batch = '20241130AA'.
+                lv_quantity = ls_posub-requiredquantity - ls_posub-withdrawnquantity."剩余需求数量
+*                ls_sub-quantityinentryunit = ls_posub-requiredquantity - ls_posub-withdrawnquantity.
+                IF lv_quantity <= 0.
+                  ls_sub-quantityinentryunit = 0.
+                  CONDENSE  ls_sub-quantityinentryunit NO-GAPS.
+                  ls_sub-materialdocumentparentline = lv_parent_id. " 父项目编码
+                  lv_line_id = lv_line_id + 1. " 子项目编号
+                  ls_sub-materialdocumentline = lv_line_id.
+                  APPEND ls_sub TO lt_item.
+                  CONTINUE.
+                ENDIF.
+                READ TABLE lt_stock TRANSPORTING NO FIELDS WITH KEY plant = ls_posub-plant
+                                                                    product = ls_posub-material BINARY SEARCH.
+                IF sy-subrc = 0.
+                  LOOP AT lt_stock INTO DATA(ls_stock) FROM sy-tabix.
+                    IF ls_stock-plant = ls_posub-plant AND ls_stock-product = ls_posub-material.
+                      lv_remain = lv_quantity - ls_stock-matlwrhsstkqtyinmatlbaseunit.
+                      IF lv_remain > 0.
+                        ls_sub-batch = ls_stock-batch.
+                        ls_sub-quantityinentryunit = ls_stock-matlwrhsstkqtyinmatlbaseunit.
+                        CONDENSE  ls_sub-quantityinentryunit NO-GAPS.
+                        ls_sub-materialdocumentparentline = lv_parent_id. " 父项目编码
+                        lv_line_id = lv_line_id + 1. " 子项目编号
+                        ls_sub-materialdocumentline = lv_line_id.
+                        APPEND ls_sub TO lt_item.
+                        lv_quantity = lv_remain .
+                      ELSE.
+                        ls_sub-batch = ls_stock-batch.
+                        ls_sub-quantityinentryunit = lv_quantity.
+                        CONDENSE  ls_sub-quantityinentryunit NO-GAPS.
+                        lv_quantity = 0.
+                        ls_sub-materialdocumentparentline = lv_parent_id. " 父项目编码
+                        lv_line_id = lv_line_id + 1. " 子项目编号
+                        ls_sub-materialdocumentline = lv_line_id.
+                        APPEND ls_sub TO lt_item.
+                        EXIT.
+                      ENDIF.
+
                     ELSE.
-                      ls_sub-batch = ls_stock-batch.
-                      ls_sub-quantityinentryunit = lv_quantity.
-                      CONDENSE  ls_sub-quantityinentryunit NO-GAPS.
-                      ls_sub-materialdocumentparentline = lv_parent_id. " 父项目编码
-                      lv_line_id = lv_line_id + 1. " 子项目编号
-                      ls_sub-materialdocumentline = lv_line_id.
-                      APPEND ls_sub TO lt_item.
                       EXIT.
                     ENDIF.
-
-                  ELSE.
-                    EXIT.
+                  ENDLOOP.
+                  IF lv_quantity > 0.
+                    o_resp-msgty = 'E'.
+                    o_resp-msgtx = |委外订单行{ ls_item-purchaseorder }-{ ls_item-purchaseorderitem }组件{ ls_posub-material }缺少非限制O库存数量{ lv_quantity }| .
+                    RETURN.
                   ENDIF.
-                ENDLOOP.
-              ENDIF.
+                ENDIF.
 *              ls_sub-quantityinentryunit = ls_posub-requiredquantity - ls_posub-withdrawnquantity.
 *              CONDENSE ls_sub-quantityinentryunit NO-GAPS.
 *
@@ -375,9 +524,33 @@ FUNCTION zzfm_mm_001.
 *              ls_sub-materialdocumentline = lv_line_id.
 *              APPEND ls_sub TO lt_item.
 
-            ENDLOOP.
-          ENDIF.
+              ENDLOOP.
+            ENDIF.
 
+          ENDIF.
+          IF ls_item-purchaseorder IS NOT INITIAL AND ls_item-storagelocation NE '1000' AND ls_item-storagelocation IS NOT INITIAL.
+            "收货库位不为1000基地仓时，则为供应商O库位相关收货
+            lv_supplier = ls_item-storagelocation.
+            lv_supplier = |{ lv_supplier ALPHA = IN }|.
+            SELECT SINGLE *
+                     FROM i_supplier WITH PRIVILEGED ACCESS
+                    WHERE supplier = @lv_supplier
+                     INTO @DATA(ls_supplier).
+            IF sy-subrc = 0.
+              ls_item-storagelocation = '1000'.
+            ELSE.
+              o_resp-msgty  = 'E'.
+              o_resp-msgtx  = |传入库位相关供应商编码{ ls_item-storagelocation }在SAP不存在|.
+              RETURN.
+            ENDIF.
+            MOVE-CORRESPONDING ls_tmp_item TO ls_zztmm_0005.
+            MOVE-CORRESPONDING ls_tmp-req-head TO ls_zztmm_0005.
+            ls_item-materialdocumentitemtext = lv_tabix.
+            ls_tmp_item-tabix = lv_tabix.
+            ls_zztmm_0005-materialdocumentitemtext = ls_tmp_item-tabix.
+            ls_zztmm_0005-supplier = lv_supplier.
+            APPEND ls_zztmm_0005 TO lt_zztmm_0005.
+          ENDIF.
         ENDIF.
 
       WHEN '201' OR '202' OR 'Z01' OR 'Z02' ."成本中心领料/冲销,会议领用
@@ -416,6 +589,9 @@ FUNCTION zzfm_mm_001.
 
       WHEN '501'."无采购订单收货
         ls_data-goodsmovementcode = '01'.
+        gv_wmsflag = abap_true.
+        ls_item-materialdocumentitemtext = lv_tabix.
+        ls_tmp_item-tabix = lv_tabix.
       WHEN '541'."发货到转包库存（供应商库存）
         ls_data-goodsmovementcode = '06'.
 
@@ -427,7 +603,6 @@ FUNCTION zzfm_mm_001.
        WHERE product = @ls_tmp_item-material
         INTO @ls_item-entryunit.
     ENDIF.
-
     ls_item-manufacturedate = zzcl_comm_tool=>date2iso( ls_tmp_item-manufacturedate ).
     ls_item-shelflifeexpirationdate = zzcl_comm_tool=>date2iso( ls_tmp_item-shelflifeexpirationdate ).
     APPEND ls_item TO lt_item.
@@ -479,8 +654,35 @@ FUNCTION zzfm_mm_001.
         o_resp-msgty  = 'S'.
         o_resp-msgtx  = 'success'.
         o_resp-sapnum = ls_ress-d-materialdocument.
+        o_resp-sapnum = |{ ls_ress-d-materialdocument }-{ ls_ress-d-materialdocumentyear }| .
         gv_mblnr = ls_ress-d-materialdocument.
         gv_year = ls_ress-d-materialdocumentyear.
+        IF lt_zztmm_0005[] IS NOT INITIAL.
+          SELECT *
+          FROM i_materialdocumentitem_2 WITH PRIVILEGED ACCESS
+         WHERE materialdocument = @gv_mblnr
+           AND materialdocumentyear = @gv_year
+          INTO TABLE @DATA(lt_materialdocumentitem_2).
+          DATA(lv_date1) = cl_abap_context_info=>get_system_date( ).
+          DATA(lv_time) = cl_abap_context_info=>get_system_time( ).
+          LOOP AT lt_zztmm_0005 ASSIGNING FIELD-SYMBOL(<fs_zztmm_0005>).
+            <fs_zztmm_0005>-created_date = lv_date1.
+            <fs_zztmm_0005>-created_time = lv_time.
+            <fs_zztmm_0005>-created_by   = lv_user.
+            <fs_zztmm_0005>-materialdocument = gv_mblnr.
+            <fs_zztmm_0005>-materialdocumentyear = gv_year.
+            READ TABLE lt_materialdocumentitem_2 INTO DATA(ls_materialdocumentitem_2) WITH KEY materialdocumentitemtext = <fs_zztmm_0005>-materialdocumentitemtext.
+            IF sy-subrc = 0.
+              <fs_zztmm_0005>-materialdocumentitem = ls_materialdocumentitem_2-materialdocumentitem.
+              <fs_zztmm_0005>-inventoryusabilitycode = ls_materialdocumentitem_2-inventoryusabilitycode.
+              <fs_zztmm_0005>-batch = ls_materialdocumentitem_2-batch.
+            ENDIF.
+          ENDLOOP.
+          IF lt_zztmm_0005[] IS NOT INITIAL.
+            MODIFY zztmm_0005 FROM TABLE @lt_zztmm_0005.
+            COMMIT WORK AND WAIT.
+          ENDIF.
+        ENDIF.
         "更改批次
         CALL FUNCTION 'ZZFM_MM_001_BATCH'.
       ELSE.
@@ -489,7 +691,11 @@ FUNCTION zzfm_mm_001.
                                     CHANGING data  = ls_rese ).
         o_resp-msgty = 'E'.
         o_resp-msgtx = ls_rese-error-message-value .
-
+        IF ls_rese-error-innererror-errordetails[] IS NOT INITIAL.
+          LOOP AT ls_rese-error-innererror-errordetails[] ASSIGNING FIELD-SYMBOL(<fs_error_detail>) WHERE severity = 'error'.
+            o_resp-msgtx = |{ o_resp-msgtx }/{ <fs_error_detail>-message }|.
+          ENDLOOP.
+        ENDIF.
       ENDIF.
     CATCH cx_web_http_client_error INTO DATA(lx_web_http_client_error).
       RETURN.

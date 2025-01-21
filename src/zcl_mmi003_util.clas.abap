@@ -163,24 +163,25 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
             accountassignmentnumber TYPE string,
           END OF ty_toaccountassignment,
           BEGIN OF ty_topurchaseorderitem,
-            suppliermaterialnumber    TYPE string,
-            purchaseorderitemtext     TYPE string,
-            plant                     TYPE string,
-            netpriceamount            TYPE string,
-            netpricequantity          TYPE string,
-            purchaseorderitemcategory TYPE string,
-            accountassignmentcategory TYPE string,
-            orderquantity             TYPE string,
-            purchaseorderquantityunit TYPE string,
-            material                  TYPE string,
-            materialgroup             TYPE string,
-            taxcode                   TYPE string,
-            isreturnsitem             TYPE abap_bool,
-            subcontractor             TYPE string,
-            supplierissubcontractor   TYPE abap_bool,
-            to_scheduleline           TYPE TABLE OF  ty_toscheduleline WITH DEFAULT KEY,
-            to_purorderpricingelement TYPE TABLE OF  ty_topurorderpricingelement WITH DEFAULT KEY,
-            to_accountassignment      TYPE TABLE OF  ty_toaccountassignment WITH DEFAULT KEY,
+            suppliermaterialnumber         TYPE string,
+            purchaseorderitemtext          TYPE string,
+            plant                          TYPE string,
+            netpriceamount                 TYPE string,
+            netpricequantity               TYPE string,
+            purchaseorderitemcategory      TYPE string,
+            accountassignmentcategory      TYPE string,
+            orderquantity                  TYPE string,
+            purchaseorderquantityunit      TYPE string,
+            material                       TYPE string,
+            materialgroup                  TYPE string,
+            taxcode                        TYPE string,
+            isreturnsitem                  TYPE abap_bool,
+            subcontractor                  TYPE string,
+            supplierissubcontractor        TYPE abap_bool,
+            unlimitedoverdeliveryisallowed TYPE abap_bool,
+            to_scheduleline                TYPE TABLE OF  ty_toscheduleline WITH DEFAULT KEY,
+            to_purorderpricingelement      TYPE TABLE OF  ty_topurorderpricingelement WITH DEFAULT KEY,
+            to_accountassignment           TYPE TABLE OF  ty_toaccountassignment WITH DEFAULT KEY,
           END OF ty_topurchaseorderitem,
           BEGIN OF ty_topurchaseorder,
             supplierrespsalespersonname TYPE string,
@@ -194,9 +195,13 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
             paymentterms                TYPE string,
             to_purchaseorderitem        TYPE TABLE OF  ty_topurchaseorderitem WITH DEFAULT KEY,
           END OF ty_topurchaseorder.
-    DATA:ls_send    TYPE ty_topurchaseorder,
-         ls_bomlink TYPE i_materialbomlink,
-         lv_menge   TYPE menge_d.
+    DATA:ls_send        TYPE ty_topurchaseorder,
+         ls_bomlink     TYPE i_materialbomlink,
+         lv_menge       TYPE menge_d,
+         lv_pricequalen TYPE i,
+         lv_price_6     TYPE p DECIMALS 6,
+         lv_price_2     TYPE p DECIMALS 2,
+         lv_bs          TYPE i.
     DATA:lv_json TYPE string.
     DATA:lt_mapping TYPE /ui2/cl_json=>name_mappings.
     TYPES:BEGIN OF ty_heads,
@@ -208,6 +213,8 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
     DATA:ls_ress TYPE ty_ress.
     DATA:lv_flag_0                     TYPE char1,
          lv_purchase_order_by_customer TYPE i_salesdocument-purchaseorderbycustomer.
+    DATA:lv_supplier               TYPE i_supplierpurchasingorg-supplier,
+         lv_purchasingorganization TYPE i_supplierpurchasingorg-purchasingorganization.
 
     TRY.
         DATA(lo_dest) = zzcl_comm_tool=>get_dest( ).
@@ -223,6 +230,14 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
     ls_send-supplier = ls_req-supplier.
     ls_send-purchasingorganization = ls_req-purchasingorganization.
     ls_send-purchasinggroup = ls_req-purchasinggroup.
+    lv_supplier = ls_req-supplier.
+    lv_supplier = |{ lv_supplier ALPHA = IN }|.
+    lv_purchasingorganization = ls_req-purchasingorganization.
+    SELECT SINGLE *
+             FROM i_supplierpurchasingorg WITH PRIVILEGED ACCESS
+            WHERE supplier = @lv_supplier
+              AND purchasingorganization = @lv_purchasingorganization
+             INTO @DATA(ls_supplierpurchasingorg).
     LOOP AT ls_req-topurchaseorderitem INTO DATA(ls_req_item).
       CLEAR:ls_bomlink.
       APPEND INITIAL LINE TO ls_send-to_purchaseorderitem ASSIGNING FIELD-SYMBOL(<fs_item>).
@@ -240,6 +255,7 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
       <fs_item>-material = ls_req_item-material.
       <fs_item>-subcontractor = ls_req_item-subcontractor.
       <fs_item>-supplierissubcontractor = ls_req_item-supplierissubcontractor.
+      <fs_item>-unlimitedoverdeliveryisallowed = 'X'.
       zcl_com_util=>matnr_zero_in( EXPORTING input  = <fs_item>-material
                                    IMPORTING output = <fs_item>-material ).
       IF ls_req_item-purchaseorderitemtext IS INITIAL.
@@ -267,8 +283,31 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
       <fs_price>-conditiontype = 'PMP0'.
       CONDENSE ls_req_item-netpriceamount NO-GAPS.
       <fs_price>-conditionrateamount = ls_req_item-netpriceamount.
-      <fs_price>-conditionquantity = '1'.
-      <fs_price>-pricingprocedurestep = '060'.
+      SPLIT <fs_price>-conditionrateamount AT '.' INTO TABLE DATA(lt_conditionrateamount).
+      lv_pricequalen = 1.
+      lv_bs          = 1.
+      READ TABLE lt_conditionrateamount INTO DATA(ls_conditionrateamount) INDEX 2.
+      IF sy-subrc = 0.
+        IF strlen( ls_conditionrateamount ) > 2.
+          DATA(lv_len) = strlen( ls_conditionrateamount ).
+          lv_pricequalen = ( lv_len - 2 ).
+          DO lv_pricequalen TIMES.
+            lv_bs = lv_bs * 10.
+          ENDDO.
+        ENDIF.
+      ENDIF.
+      lv_price_6 = <fs_price>-conditionrateamount.
+      lv_price_6 = lv_price_6 * lv_bs.
+      lv_price_2 = lv_price_6.
+      <fs_price>-conditionrateamount = lv_price_2.
+      CONDENSE <fs_price>-conditionrateamount NO-GAPS.
+      <fs_price>-conditionquantity = lv_bs.
+      CONDENSE <fs_price>-conditionquantity NO-GAPS.
+      IF ls_supplierpurchasingorg-calculationschemagroupcode = '01'.
+        <fs_price>-pricingprocedurestep = '080'.
+      ELSE.
+        <fs_price>-pricingprocedurestep = '060'.
+      ENDIF.
       <fs_price>-pricingprocedurecounter = '001'.
       APPEND INITIAL LINE TO <fs_item>-to_purorderpricingelement ASSIGNING <fs_price>.
       <fs_price>-conditiontype = 'ZP01'.
@@ -290,39 +329,41 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
         SELECT SINGLE   b~unitofmeasure,
                         b~unitofmeasure_e AS unittext
                  FROM i_unitofmeasure WITH PRIVILEGED ACCESS AS b
+                 INNER JOIN i_productunitsofmeasure WITH PRIVILEGED ACCESS AS a
+                   ON b~unitofmeasure = a~alternativeunit
                 WHERE unitofmeasure_e = @<fs_item>-purchaseorderquantityunit
+                  AND product = @<fs_item>-material
                  INTO @DATA(ls_requnit).
         IF sy-subrc = 0.
-          IF ls_baseunit-unitofmeasure = ls_requnit-unitofmeasure.
-
-          ELSE.
-            CLEAR:lv_menge.
-            lv_menge = ls_req_item-orderquantity.
-            DATA(lo_unit) = cl_uom_conversion=>create( ).
-            lo_unit->unit_conversion_simple( EXPORTING  input                = lv_menge
-                                                        round_sign           = 'X'
-                                                        unit_in              = ls_requnit-unitofmeasure
-                                                        unit_out             = ls_baseunit-unitofmeasure
-                                             IMPORTING  output               = lv_menge
-                                             EXCEPTIONS conversion_not_found = 01
-                                                        division_by_zero     = 02
-                                                        input_invalid        = 03
-                                                        output_invalid       = 04
-                                                        overflow             = 05
-                                                        units_missing        = 06
-                                                        unit_in_not_found    = 07
-                                                        unit_out_not_found   = 08 ).
-
-            <fs_item>-orderquantity = lv_menge.
-            CONDENSE <fs_item>-orderquantity NO-GAPS.
-          ENDIF.
+*          IF ls_baseunit-unitofmeasure = ls_requnit-unitofmeasure.
+*
+*          ELSE.
+*            CLEAR:lv_menge.
+*            lv_menge = ls_req_item-orderquantity.
+*            DATA(lo_unit) = cl_uom_conversion=>create( ).
+*            lo_unit->unit_conversion_simple( EXPORTING  input                = lv_menge
+*                                                        round_sign           = 'X'
+*                                                        unit_in              = ls_requnit-unitofmeasure
+*                                                        unit_out             = ls_baseunit-unitofmeasure
+*                                             IMPORTING  output               = lv_menge
+*                                             EXCEPTIONS conversion_not_found = 01
+*                                                        division_by_zero     = 02
+*                                                        input_invalid        = 03
+*                                                        output_invalid       = 04
+*                                                        overflow             = 05
+*                                                        units_missing        = 06
+*                                                        unit_in_not_found    = 07
+*                                                        unit_out_not_found   = 08 ).
+*            <fs_item>-orderquantity = lv_menge.
+*            CONDENSE <fs_item>-orderquantity NO-GAPS.
+*          ENDIF.
         ELSE.
           flag = 'E'.
-          msg = |单位{ <fs_item>-purchaseorderquantityunit }不存在|.
+          msg = |物料{ <fs_item>-material }单位{ <fs_item>-purchaseorderquantityunit }不存在|.
           RETURN.
         ENDIF.
         <fs_scheduleline>-schedulelineorderquantity = <fs_item>-orderquantity.
-        CLEAR:<fs_item>-purchaseorderquantityunit.
+*        CLEAR:<fs_item>-purchaseorderquantityunit.
       ENDIF.
       ls_bomlink-material = <fs_item>-material.
       ls_bomlink-plant = <fs_item>-plant.
@@ -379,6 +420,7 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
            ( abap = 'IsReturnsItem'                         json = 'IsReturnsItem'                     )
            ( abap = 'Subcontractor'                         json = 'Subcontractor'                     )
            ( abap = 'SupplierIsSubcontractor'               json = 'SupplierIsSubcontractor'           )
+           ( abap = 'UnlimitedOverdeliveryIsAllowed'        json = 'UnlimitedOverdeliveryIsAllowed'    )
 
            ( abap = 'to_ScheduleLine'                       json = 'to_ScheduleLine'                   )
            ( abap = 'ScheduleLineOrderQuantity'             json = 'ScheduleLineOrderQuantity'         )
@@ -444,6 +486,11 @@ CLASS ZCL_MMI003_UTIL IMPLEMENTATION.
                                       CHANGING data  = ls_rese ).
           flag = 'E'.
           msg = ls_rese-error-message-value .
+          IF ls_rese-error-innererror-errordetails[] IS NOT INITIAL.
+            LOOP AT ls_rese-error-innererror-errordetails[] ASSIGNING FIELD-SYMBOL(<fs_error_detail>) WHERE severity = 'error'.
+              msg = |{ msg }/{ <fs_error_detail>-message }|.
+            ENDLOOP.
+          ENDIF.
 
         ENDIF.
       CATCH cx_http_dest_provider_error INTO DATA(lo_error).
