@@ -9,7 +9,6 @@
    <FUNCTIONS>
     <item>
      <FUNCNAME>ZZFG_MM_005_0001</FUNCNAME>
-     <SHORT_TEXT>物料分页查询接口</SHORT_TEXT>
      <IMPORT>
       <RSIMP>
        <PARAMETER>I_REQ</PARAMETER>

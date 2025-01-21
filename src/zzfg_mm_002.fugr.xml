@@ -9,7 +9,6 @@
    <FUNCTIONS>
     <item>
      <FUNCNAME>ZZFG_MM_002_0001</FUNCNAME>
-     <SHORT_TEXT>供应商创建接口</SHORT_TEXT>
      <IMPORT>
       <RSIMP>
        <PARAMETER>I_REQ</PARAMETER>
@@ -38,7 +37,6 @@
     </item>
     <item>
      <FUNCNAME>ZZFG_MM_002_0001_COMPANY</FUNCNAME>
-     <SHORT_TEXT>供应商采购公司视图调整</SHORT_TEXT>
      <IMPORT>
       <RSIMP>
        <PARAMETER>I_REQ</PARAMETER>
@@ -67,11 +65,9 @@
     </item>
     <item>
      <FUNCNAME>ZZFG_MM_002_0001_PURORG</FUNCNAME>
-     <SHORT_TEXT>供应商采购采购组织视图调整</SHORT_TEXT>
     </item>
     <item>
      <FUNCNAME>ZZFG_MM_002_0002</FUNCNAME>
-     <SHORT_TEXT>供应商查询接口</SHORT_TEXT>
      <IMPORT>
       <RSIMP>
        <PARAMETER>I_REQ</PARAMETER>
@@ -100,7 +96,6 @@
     </item>
     <item>
      <FUNCNAME>ZZFG_MM_002_0003</FUNCNAME>
-     <SHORT_TEXT>供应商修改接口</SHORT_TEXT>
      <IMPORT>
       <RSIMP>
        <PARAMETER>I_REQ</PARAMETER>
